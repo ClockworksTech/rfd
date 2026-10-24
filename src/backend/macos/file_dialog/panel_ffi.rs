@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use block2::Block;
 use objc2::rc::Retained;
-use objc2::MainThreadMarker;
+use objc2::{msg_send, ClassType, MainThreadMarker};
 use objc2_app_kit::{NSModalResponse, NSOpenPanel, NSSavePanel, NSWindow, NSWindowLevel};
 use objc2_foundation::{NSArray, NSString, NSURL};
 use raw_window_handle::RawWindowHandle;
@@ -18,6 +18,35 @@ use crate::FileDialog;
 
 extern "C" {
     pub fn CGShieldingWindowLevel() -> i32;
+}
+
+/// `+[NSOpenPanel openPanel]`, or `None` when AppKit returns nil instead of a
+/// panel.
+///
+/// The open and save panels are hosted by a system XPC service, and when that
+/// service can't be reached (a broken or interrupted connection, a bundle the
+/// service refuses) AppKit returns nil, although the header says it never
+/// does. The generated `NSOpenPanel::openPanel` binding panics on that, which
+/// takes the whole app down; asking through `msg_send!` with an `Option`
+/// return lets the dialog end as if it was cancelled instead.
+fn new_open_panel(_mtm: MainThreadMarker) -> Option<Retained<NSOpenPanel>> {
+    let panel: Option<Retained<NSOpenPanel>> =
+        unsafe { msg_send![NSOpenPanel::class(), openPanel] };
+    if panel.is_none() {
+        log::error!("+[NSOpenPanel openPanel] returned nil; the dialog can't be shown");
+    }
+    panel
+}
+
+/// `+[NSSavePanel savePanel]`, or `None` when AppKit returns nil. See
+/// [`new_open_panel`].
+fn new_save_panel(_mtm: MainThreadMarker) -> Option<Retained<NSSavePanel>> {
+    let panel: Option<Retained<NSSavePanel>> =
+        unsafe { msg_send![NSSavePanel::class(), savePanel] };
+    if panel.is_none() {
+        log::error!("+[NSSavePanel savePanel] returned nil; the dialog can't be shown");
+    }
+    panel
 }
 
 pub struct Panel {
@@ -164,8 +193,8 @@ impl PanelExt for Retained<NSOpenPanel> {
 }
 
 impl Panel {
-    pub fn build_pick_file(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    pub fn build_pick_file(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_open_panel(mtm)?;
 
         if !opt.filters.is_empty() {
             panel.add_filters(opt);
@@ -190,11 +219,11 @@ impl Panel {
         unsafe { panel.setCanChooseDirectories(false) };
         unsafe { panel.setCanChooseFiles(true) };
 
-        Self::new(Retained::into_super(panel), opt.parent.as_ref())
+        Some(Self::new(Retained::into_super(panel), opt.parent.as_ref()))
     }
 
-    pub fn build_save_file(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSSavePanel::savePanel(mtm) };
+    pub fn build_save_file(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_save_panel(mtm)?;
 
         if !opt.filters.is_empty() {
             panel.add_filters(opt);
@@ -216,11 +245,11 @@ impl Panel {
             panel.set_can_create_directories(can);
         }
 
-        Self::new(panel, opt.parent.as_ref())
+        Some(Self::new(panel, opt.parent.as_ref()))
     }
 
-    pub fn build_pick_folder(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    pub fn build_pick_folder(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_open_panel(mtm)?;
 
         if let Some(path) = &opt.starting_directory {
             panel.set_path(path, opt.file_name.as_deref());
@@ -236,11 +265,11 @@ impl Panel {
         unsafe { panel.setCanChooseDirectories(true) };
         unsafe { panel.setCanChooseFiles(false) };
 
-        Self::new(Retained::into_super(panel), opt.parent.as_ref())
+        Some(Self::new(Retained::into_super(panel), opt.parent.as_ref()))
     }
 
-    pub fn build_pick_folders(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    pub fn build_pick_folders(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_open_panel(mtm)?;
 
         if let Some(path) = &opt.starting_directory {
             panel.set_path(path, opt.file_name.as_deref());
@@ -257,11 +286,11 @@ impl Panel {
         unsafe { panel.setCanChooseFiles(false) };
         unsafe { panel.setAllowsMultipleSelection(true) };
 
-        Self::new(Retained::into_super(panel), opt.parent.as_ref())
+        Some(Self::new(Retained::into_super(panel), opt.parent.as_ref()))
     }
 
-    pub fn build_pick_files(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    pub fn build_pick_files(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_open_panel(mtm)?;
 
         if !opt.filters.is_empty() {
             panel.add_filters(opt);
@@ -283,11 +312,11 @@ impl Panel {
         unsafe { panel.setCanChooseFiles(true) };
         unsafe { panel.setAllowsMultipleSelection(true) };
 
-        Self::new(Retained::into_super(panel), opt.parent.as_ref())
+        Some(Self::new(Retained::into_super(panel), opt.parent.as_ref()))
     }
 
-    pub fn build_pick_file_or_folder(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    pub fn build_pick_file_or_folder(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_open_panel(mtm)?;
 
         if !opt.filters.is_empty() {
             panel.add_filters(opt);
@@ -308,11 +337,11 @@ impl Panel {
         unsafe { panel.setCanChooseFiles(true) };
         unsafe { panel.setAllowsMultipleSelection(false) };
 
-        Self::new(Retained::into_super(panel), opt.parent.as_ref())
+        Some(Self::new(Retained::into_super(panel), opt.parent.as_ref()))
     }
 
-    pub fn build_pick_files_or_folders(opt: &FileDialog, mtm: MainThreadMarker) -> Self {
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    pub fn build_pick_files_or_folders(opt: &FileDialog, mtm: MainThreadMarker) -> Option<Self> {
+        let panel = new_open_panel(mtm)?;
 
         if !opt.filters.is_empty() {
             panel.add_filters(opt);
@@ -333,6 +362,6 @@ impl Panel {
         unsafe { panel.setCanChooseFiles(true) };
         unsafe { panel.setAllowsMultipleSelection(true) };
 
-        Self::new(Retained::into_super(panel), opt.parent.as_ref())
+        Some(Self::new(Retained::into_super(panel), opt.parent.as_ref()))
     }
 }
